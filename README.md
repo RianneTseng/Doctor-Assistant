@@ -1,53 +1,38 @@
 # Doctor-Assistant
 
-## Project Description
-This is a doctor assistant project developed using Langflow to help doctors quickly retrieve information. The main functionalities include:
-- Search for Wikipedia information
-- Search for files uploaded by the doctor
-- Control the query source (Wikipedia or doctor-uploaded files)
-- Uploaded files can be stored in different databases for better categorization and management
-- Control which database to search from via the conversation interface
+## 專案介紹
+此專案用來協助醫生更有效率地檢索資訊，透過 Langflow 建立，可以查詢維基百科的資訊及醫生上傳的檔案，且可以選擇資料來源與管理多個資料庫（RAG）。
 
-## Key Features
-- **Search Wikipedia Information**: Quickly query and return relevant information from Wikipedia.
-- **Search Uploaded Files**: Doctors can upload their own files to different databases, and the assistant can search through these files.
-- **Database Management**: The assistant supports multiple databases and allows selecting which database to query from in the conversation interface.
+### 主要功能：
+- **搜尋維基百科**：快速檢索維基百科的內容。
+- **搜尋上傳檔案**：搜尋所上傳的檔案。
+- **資料庫管理**：支援將檔案分類至資料庫的不同 Collection。
+- **資料來源控制**：可選擇資料來源（維基百科或上傳檔案）。
 
-## Technologies Used
-- **Langflow**: A visual workflow-building tool used to define and manage the project flow.
-- **AstraDB**: Used to store and manage the doctor's uploaded files, supporting various file formats and data retrieval functions.
-- **OpenAI**: Powers natural language dialogue, providing intelligent querying and interaction capabilities.
+## 使用方法
+1. 上傳醫生的檔案並選擇對應的資料庫儲存。
+2. 在對話中選擇資料來源（維基百科或上傳檔案）。
+3. 將根據選擇的資料來源輸出相關數據。
 
-## How to Use
-1. Upload the doctor's files to the system and select the appropriate database for storage.
-2. In the query interface, you can choose the source of the data, either Wikipedia or the uploaded files.
-3. The system will return the relevant data based on the selected source.
+## 性能
 
+### 原始版本的設計
+在原始版本中，資料來源包括：
+- 維基百科搜尋（`Wikipedia API`）
+- 使用者上傳的資料庫（`Astra DB`）
 
-## Demo
-### Flow Diagram
-Here is the visual representation of the flow used in this project, built with Langflow:
-![image](https://github.com/RianneTseng/Doctor-Assistant/blob/main/Flow%20Diagram.png)
+每次使用者詢問問題時，會同時呼叫 `Wikipedia API` 以及 使用`Astra DB` 的搜尋功能，因此每次回答問題約需 30 到 40 秒。此外，為了同時處理這兩種不同的資料來源，數據處理流程較為繁瑣。例如在搜尋資料庫時，會先將使用者的問題作為搜尋輸入，然後使用 `Parse Data` 將結果轉換為文字格式，最後由 `Conditional Router` 判斷是否將結果注入到 Prompt 中。此過程光是搜尋資料庫就涉及三個 Component，維基百科資料也類似，總共需要經過 6 個 Component 才能將資料注入 Prompt。
 
-### Functionality Demo
+#### 原先設計的缺點
+- 無論使用者是否只要求單個資料來源，都會先對兩個資料來源進行搜尋，才能進入 Prompt 階段。
+- 有時 API 呼叫會出錯、或是資料庫搜尋超時，導致整個 Flow 中斷、無法正常運行。
 
-#### 1. Searching Wikipedia Information
-![image](https://github.com/RianneTseng/Doctor-Assistant/blob/main/Searching%20Wikipedia%20Information.png)
+### 更新版本的設計
+在新版本中，我將架構改為使用 Agent 來呼叫資料。以資料庫為例，將使用者輸入的問題交給 `Vector Store Router Agent` 處理，並透過 `Vector Store Info` 來儲存 `Astra DB` 的兩個 Collection (covid 和 cancer)的資訊，再作為工具供 `Vector Store Router Agent` 使用。`Wikipedia API` 也使用相同的方法，將使用者的問題交由 `Tool Calling Agent` 處理，由此 Agent 來呼叫 `Wikipedia API`。
 
-#### 2. Searching Uploaded Files
-![image](https://github.com/RianneTseng/Doctor-Assistant/blob/main/Searching%20Uploaded%20Files.png)
+#### 改進
+- 減少不必要的資料搜尋：改成使用 Agent 後，雖然 Component 的數量沒有減少（實際上增加了一個，因為兩個 Collection 要分隔開來），但透過 Agent 呼叫工具，減少了一些運行的時間。如果只需一個資料來源，Agent 不會再進行另一個不必要的搜尋。從效能上來看，雖然一次搜尋兩個資料來源的時間與前一版本相差無幾，但在只搜尋單一資料來源的情況下，運行時間從 30 幾秒縮短到 20 幾秒左右，我認為這是一個不錯的進展。
+- 加強錯誤處理：新版使用 Agent 來呼叫工具而非直接搜尋輸入的文字，因此錯誤處理更加完善。原本若 `Wikipedia API` 呼叫出錯或資料庫搜尋超時，整個流程會停止、無法正常回答使用者問題。但在新版中，通過調整 Agent 的 Prompt 及錯誤處理的設定，即便 `Wikipedia API` 或 `Astra DB` 呼叫出現問題，流程仍然可以繼續，並能正常提供回應給使用者。
 
-#### 3. Simultaneous Search (Wikipedia + Uploaded Files)
-![image](https://github.com/RianneTseng/Doctor-Assistant/blob/main/Simultaneous%20Search.png)
-
-#### 4. Switching Data Sources
-In the Folder option from this image, you can input different database names to switch between different databases.
-![image](https://github.com/RianneTseng/Doctor-Assistant/blob/main/Switching%20Data%20Sources.png)
-
-#### 5. Managing Multiple Databases
-![image](https://github.com/RianneTseng/Doctor-Assistant/blob/main/Managing%20Multiple%20Databases.png)
-
-
-## Project Files
-- `doctor.json`: A flow file exported from Langflow.
-- `README.md`: Documentation and project notes.
+#### 新出現的缺點
+相比原先版本的 `Ｃonditional Ｒouter` ，新版使用 Agent 來處理資料，雖然提升了靈活性和錯誤處理能力，但因為每次呼叫 Agent 都依賴 LLM Model 運行，因此使用的 Token 數量較多，運行成本會比原本使用 `Ｃonditional Ｒouter` 的設計更高，導致整體價格稍微上升一些。
