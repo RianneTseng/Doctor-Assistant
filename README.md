@@ -1,184 +1,174 @@
-# Doctor-Assistant
+# 專案進展報告
 
-## Tool Comparison Table
-| Name  | Supports RAG | Workflow | Customizable | Available Models | Has Agent | API Access | Cost |
-|-----|-----|-----|-----|-----|-----|-----|-----|
-| [Langflow](https://www.langflow.org/) | Yes | Yes | Yes | HuggingFace, Ollama, OpenAI, etc. | Yes | Yes | Free |
-| [Flowise](https://flowiseai.com/) | Yes | Yes | Yes | Open source LLMs | Yes | Yes | $35/month |
-| [Dify](https://dify.ai/) | Yes (Paid) | Yes | Yes (Paid) | HuggingFace, Ollama, OpenAI, etc. | Yes | Yes | Free or $59/month |
+## 1. 評估指標
 
-## Example Project Using Langflow
+DocLens 可評估以下四個數值：
 
-### Deployment Steps
-Follow these steps to deploy this application:
-1. Run Langflow Locally:
-   - Modify the `BASE_API_URL` in the code to point to where Langflow is running (e.g., `http://127.0.0.1:7861`).
-   - Find the Flow ID from the API section of the Langflow project and enter it into the `FLOW_ID` variable in the code.
-   - Make sure the vector store database is not hibernated.
+- **Claim Recall**
+- **Claim Precision**
+- **Citation Recall**
+- **Citation Precision**
 
-2. Get LINE Bot Access Token and Secret:
-   - In [LINE Developers](https://developers.line.biz/zh-hant/), find the LINE Bot's access token and secret, and enter them into the code.
+目前的數據處理僅適用於 **Claim**，因為 **Citation** 需要的數據格式與目前處理的數據不相符。
 
-3. Run the Python Application:
-   ```sh
-   python3 Linebot.py
-   ```
-
-4. Start Ngrok for Port Forwarding:
-   - Use the URL output from running the Python application (e.g., `Running on http://127.0.0.1:5000/`) to determine the correct local address for Ngrok.
-
-   ```sh
-   ngrok http http://127.0.0.1:5000
-   ```
-
-5. Modify LINE Webhook Settings:
-   - Go to [LINE Developers](https://developers.line.biz/zh-hant/), and change the Webhook URL to the forwarding URL provided by Ngrok.
-
-6. Complete Deployment:
-   - Once everything is set up, you can start testing the LINE Chatbot.
-
-### The code
-
-```python=
-from flask import Flask, request
-import json
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
-
-import argparse
-from argparse import RawTextHelpFormatter
-import requests
-from typing import Optional
-import warnings
-try:
-    from langflow.load import upload_file
-except ImportError:
-    warnings.warn("Langflow provides a function to help you upload files to the flow. Please install langflow to use it.")
-    upload_file = None
-
-BASE_API_URL = ""
-FLOW_ID = ""
-ENDPOINT = "" # You can set a specific endpoint name in the flow settings
-ACCESS_TOKEN = ''
-SECRET = ''
-
-# You can tweak the flow by adding a tweaks dictionary
-# e.g {"OpenAI-XXXXX": {"model_name": "gpt-4"}}
-TWEAKS = {
-  "OpenAIModel-B7GZz": {},
-  "ChatOutput-N7iNQ": {},
-  "Prompt-DFhHR": {},
-  "AstraDB-qT5xK": {},
-  "OpenAIEmbeddings-iCPPi": {},
-  "SplitText-jpVvF": {},
-  "OpenAIEmbeddings-2PiRR": {},
-  "File-HM7qi": {},
-  "Directory-jQLUz": {},
-  "ParseData-vyP2a": {},
-  "TextInput-AZCYl": {},
-  "AstraDB-ZrJPa": {},
-  "ChatInput-FYbX9": {}
+### Claim 的計算方式
+- Claim 是透過 `result` 來生成多條 **subclaim**，再將 **subclaim** 餵給 LLM 來評分。
+- **general_subclaim_generation.json** 負責生成 **subclaim**，`Prompt` 如下：
+```
+{
+"role": "system",
+"content": "Instruction: You are a helpful medical assistant. Read the clinical report and generate at least __MIN_CLAIM__ at most __MAX_CLAIM__ short claims that are supported by the clinical report. Each short claim should contain only one fact. The generated claims should cover all facts in the clinical report."
 }
+```
+- **general_claim_entail.json** 負責計算 **claim recall** 和 **claim precision**，`Prompt` 如下：
+```
+{
+"role": "system",
+"content": "Instruction: You are a helpful medical assistant. Please evaluate whether the clinical report can fully entail each claim below. Also generate an explanation for your answer. Please output '1' or '0' for each claim, where '1' means the claim can be fully entailed by the clinical_report, and '0' means the claim contains information that cannot be entailed by the clinical_report."
+}
+```
 
-
-app = Flask(__name__)
-@app.route("/", methods=['POST'])
-
-
-def linebot():
-    body = request.get_data(as_text=True)
-    try:
-        json_data = json.loads(body)
-        line_bot_api = LineBotApi(ACCESS_TOKEN)
-        handler = WebhookHandler(SECRET)
-        signature = request.headers['X-Line-Signature']
-        handler.handle(body, signature)
-        tk = json_data['events'][0]['replyToken']
-        type = json_data['events'][0]['message']['type']
-        if type=='text':
-            msg = json_data['events'][0]['message']['text']
-            reply = combineLangflowAndLine(msg)
-        else:
-            reply = ' '
-        line_bot_api.reply_message(tk,TextSendMessage(reply))
-    except:
-        print(body)
-    return 'OK'
-
-
-def run_flow(message: str,
-  endpoint: str,
-  output_type: str = "chat",
-  input_type: str = "chat",
-  tweaks: Optional[dict] = None,
-  api_key: Optional[str] = None) -> dict:
-    """
-    Run a flow with a given message and optional tweaks.
-
-    :param message: The message to send to the flow
-    :param endpoint: The ID or the endpoint name of the flow
-    :param tweaks: Optional tweaks to customize the flow
-    :return: The JSON response from the flow
-    """
-    api_url = f"{BASE_API_URL}/api/v1/run/{endpoint}"
-
-    payload = {
-        "input_value": message,
-        "output_type": output_type,
-        "input_type": input_type,
-    }
-    headers = None
-    if tweaks:
-        payload["tweaks"] = tweaks
-    if api_key:
-        headers = {"x-api-key": api_key}
-    response = requests.post(api_url, json=payload, headers=headers)
-    response_data = response.json()
-    try:
-        output_text = response_data['outputs'][0]['outputs'][0]['results']['message']['data']['text']
-    except (KeyError, IndexError) as e:
-        output_text = "Failed to extract output text from response."
-    return output_text
-
-
-def combineLangflowAndLine(userInput: str):
-    parser = argparse.ArgumentParser(description="""Run a flow with a given message and optional tweaks.
-Run it like: python <your file>.py "your message here" --endpoint "your_endpoint" --tweaks '{"key": "value"}'""",
-        formatter_class=RawTextHelpFormatter)
-    parser.add_argument("--endpoint", type=str, default=ENDPOINT or FLOW_ID, help="The ID or the endpoint name of the flow")
-    parser.add_argument("--tweaks", type=str, help="JSON string representing the tweaks to customize the flow", default=json.dumps(TWEAKS))
-    parser.add_argument("--api_key", type=str, help="API key for authentication", default=None)
-    parser.add_argument("--output_type", type=str, default="chat", help="The output type")
-    parser.add_argument("--input_type", type=str, default="chat", help="The input type")
-    parser.add_argument("--upload_file", type=str, help="Path to the file to upload", default=None)
-    parser.add_argument("--components", type=str, help="Components to upload the file to", default=None)
-
-    args = parser.parse_args()
-    try:
-      tweaks = json.loads(args.tweaks)
-    except json.JSONDecodeError:
-      raise ValueError("Invalid tweaks JSON string")
-
-    if args.upload_file:
-        if not upload_file:
-            raise ImportError("Langflow is not installed. Please install it to use the upload_file function.")
-        elif not args.components:
-            raise ValueError("You need to provide the components to upload the file to.")
-        tweaks = upload_file(file_path=args.upload_file, host=BASE_API_URL, flow_id=args.endpoint, components=[args.components], tweaks=tweaks)
-
-    response = run_flow(
-        message=userInput,
-        endpoint=args.endpoint,
-        output_type=args.output_type,
-        input_type=args.input_type,
-        tweaks=tweaks,
-        api_key=args.api_key
-    )
-    return response
-
-
-if __name__ == "__main__":
-    app.run()
+### Citation 的計算方式
+- 在生成 `output` 時，將對話的 `index` 記錄到每一句診斷中。
+- 之後透過 **acibench-test1-gpt-4-shot2-quick_test3.json** 和 **acibench-test1-gpt-4-shot2-quick_test3.citation_score** 來評估 citation 是否正確。例如：
 
 ```
+{
+"example_id": "D2N107",
+"input": "
+    [0][doctor] so bryan it's nice to see you again in the office today what's going on
+    [1][patient] i was in my yard yesterday and i was raking leaves and i felt fine and then when i got into my house about two hours later my back started tightening up and i started getting pins and needles in my right foot
+    [2][doctor] alright have you ever had this type of back pain before
+    [3][patient] i had it once about three years ago but it went away after a day
+    [4][doctor] okay and did you try anything for the pain yet did you take anything or have you have you tried icing
+    [5][patient] put some ice on it and i tried two advils and it did n't help..."
+"output": "
+    CHIEF COMPLAINT
+
+    Back pain and tingling sensation in the right foot [1].
+
+    HISTORY OF PRESENT ILLNESS
+
+    Bryan is a 62-year-old male presented with significant complaints of back pain after raking leaves in his yard [1][5]..."
+}
+```
+
+其中 `[1][5]` 的 citation 記錄了該診斷的來源對話 index，這些 index 會在 **acibench-test1-gpt-4-shot2-quick_test3.citation_score** 中進一步評估是否正確。
+
+
+## 2. 服務選擇與調整
+
+- DocLens 原先使用 **Azure OpenAI** 服務，而非 OpenAI 本身的服務。
+- 選擇 **Azure OpenAI** 是基於其安全性考量，但模型部屬較為困難。
+- 因此，我將 Azure 服務改為 **OpenAI**，並調整了部分程式碼。
+- 主要修改的檔案包括：
+  - **Python 檔案**：
+    - `generate_subclaims.py`（負責生成 subclaim，改用 OpenAI API）
+    - `run_entailment.py`（負責評估 claim entailment，改用 OpenAI API）
+  - **Shell Script 檔案**：
+    - `eval_general_claim_generation.sh`（執行 subclaim 生成的流程）
+    - `eval_general_model_citation.sh`（評估 citation 的 script）
+
+
+## 3. OpenAI 模型測試
+
+- 目前測試過 **GPT-4o Mini** 和 **GPT-4o**。
+- **Claim Recall** 和 **Claim Precision** 的計算方式：
+  - 需先透過 `general_subclaim_generation.json` 生成 **subclaim**。
+  - 再使用 `general_claim_entail.json` 計算 **claim recall** 與 **claim precision**。
+- 測試結果如下：
+  - **GPT-4o Mini**:
+    - Claim Recall: 0.6667
+    - Claim Precision: 0.4375
+  - **GPT-4o**:
+    - Claim Recall: 0.5333
+    - Claim Precision: 0.3529
+- 測試過程中發現，生成的分數波動較大，有時甚至可能出現 `0` 的狀況。
+- 我認為這是因為：
+  - 目前的對話數據中，並非所有資料都足以產生 `subclaim`。
+  - `general_claim_entail.json` 的 prompt 設計可能不夠詳細，導致評估結果存在較大變異。
+
+
+## 4. 測試數據轉換工具
+
+- 撰寫了一個 `csv2json.py` 腳本，用於將目前的測試數據從 **CSV** 轉換為 **JSON**。
+- 生成兩種 JSON 檔案：
+  - **data.json**：用來放在 `/data`，對應到 `$REFERENCE`，僅包含 `input`、`reference`、`example_id`。
+  - **results.json**：用來放在 `/results`，對應到 `$SAVENAME`，包含 `input`、`output`、`reference`、`example_id`。
+- **JSON 欄位對應關係：**
+  - `example_id`：來自 CSV 讀取到的 index。
+  - `input`：由 `prev_step_str`（如果有）加上 `synthesis_question` 組合而成。
+  - `output`：來自 CSV 欄位 `system_response`。
+  - `reference`：對應 CSV 欄位 `ground_truth_answer`，
+
+    在 **ACI-Bench-TestSet-1\_clean.json** （由 DocLens 提供的資料）`reference` 可能是由真實的醫生撰寫的醫療紀錄，而 `output` 是由 LLM 根據 `input` 生成的醫療紀錄。例如：
+
+```
+"example_id": "D2N107",
+"reference": "
+    CHIEF COMPLAINT
+    
+    Low back pain.
+    
+    HISTORY OF PRESENT ILLNESS
+    
+    Bryan Brooks is a pleasant 39-year-old male who presents to the clinic today for the evaluation of low back pain. He is accompanied today by his partner.
+    
+    Approximately 2 hours after he finished raking leaves yesterday, the patient began to feel a tightening sensation in his low back and tingling in his right foot. Prior to this, he recalls a similar episode approximately 3 years ago in which his symptoms resolved after 1 day. Ice and Advil provided no relief, but his pain is less severe when he is in a seated position and taking a hot shower helped alleviate his pain. The patient's partner reports that his pain seems to worsen when he stands up.
+    
+    REVIEW OF SYSTEMS
+    
+    Musculoskeletal: Reports low back pain.
+    Neurological: Reports tingling in the right foot.
+    
+    PHYSICAL EXAM
+    
+    NEURO: Normal strength and sensation.
+    MSK: Examination of the lumbar spine: No pain on extension. Some pain with flexion. Pain with palpation around L5. Dorsiflexion is normal. Pulses are equal in all extremities.
+    
+    RESULTS
+    
+    X-rays obtained and reviewed in office today were normal.
+    
+    ASSESSMENT
+    
+    Low back sprain.
+    
+    PLAN
+    
+    The examination findings and x-ray results were discussed with the patient and his partner today. I recommend we treat this conservatively with rest, meloxicam, and formal physical therapy. If he fails to improve, we can consider obtaining an MRI for further evaluation.
+    
+    INSTRUCTIONS
+    
+    The patient will follow up in 2 weeks.",
+"output": "
+    CHIEF COMPLAINT
+    
+    Back pain and tingling sensation in the right foot [1].
+    
+    HISTORY OF PRESENT ILLNESS
+    
+    Bryan is a 62-year-old male presented with significant complaints of back pain after raking leaves in his yard [1][5].
+    The patient reports that he was in his yard and was raking leaves which was when he started to feel the tightening in his back and later started to experience a tingling sensation in his right foot[1][5].
+    The patient reports that he was in his yard and was raking leaves which was when he started to feel the tightening in his back and later started to experience a tingling sensation in his right foot[1][5].
+    He experienced similar symptoms about three years ago, but it resolved after a day [3].
+    He attempted to resolve his current pain by resting, using ice, and taking Advil, but this did not result in any relief [5][6].
+    Patient reports that the only time he feels some relief from the pain is when he is in a hot shower or sits [7][8].
+    
+    REVIEW OF SYSTEMS
+    
+    ...
+    
+    PHYSICAL EXAMINATION
+    
+    ...
+    
+    RESULTS
+    
+    ...
+    
+    ASSESSMENT AND PLAN
+    
+    ..."
+```
+
